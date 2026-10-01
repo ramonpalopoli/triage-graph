@@ -1,0 +1,22 @@
+# secrets & local config
+.env
+*.env
+# data & logs (never commit audit trails or databases)
+data/
+*.db
+*.jsonl
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+# editors / os
+.vscode/
+.idea/
+.DS_Store
+GUIA_ENTREVISTA.md

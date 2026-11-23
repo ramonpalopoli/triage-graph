@@ -16,11 +16,11 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from triage_graph import knowledge
+from triage_graph.checkpoint import make_serde
 from triage_graph.llm import RuleBasedLLM, StructuredLLM
 from triage_graph.state import WRITE_ACTIONS, Classification, Plan, TriageState
 
@@ -33,15 +33,9 @@ def _event(node: str, **data: object) -> dict:
 
 def build_graph(llm: StructuredLLM | None = None, *, checkpointer=None):
     llm = llm or RuleBasedLLM()
-    # Explicitly allow our Pydantic models in checkpoints (deny-by-default deserialization).
-    checkpointer = checkpointer or MemorySaver(
-        serde=JsonPlusSerializer(
-            allowed_msgpack_modules=[
-                ("triage_graph.state", "Classification"),
-                ("triage_graph.state", "Plan"),
-            ]
-        )
-    )
+    # Default: in-memory. Pass a persistent saver (see checkpoint.open_checkpointer) to make the
+    # approval pause survive a restart. Either way only our Pydantic models are deserialized.
+    checkpointer = checkpointer or MemorySaver(serde=make_serde())
 
     def classify(state: TriageState) -> TriageState:
         prompt = (

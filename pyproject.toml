@@ -19,7 +19,9 @@ dependencies = [
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.40"]
-dev = ["pytest>=8", "ruff>=0.4"]
+sqlite = ["langgraph-checkpoint-sqlite>=2.0"]
+postgres = ["langgraph-checkpoint-postgres>=2.0", "psycopg[binary]>=3.1"]
+dev = ["pytest>=8", "ruff>=0.4", "langgraph-checkpoint-sqlite>=2.0"]
 
 [project.scripts]
 triage-graph = "triage_graph.cli:main"

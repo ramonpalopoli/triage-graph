@@ -13,8 +13,11 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-# model id -> (input $/MTok, output $/MTok). Cache reads bill at 0.1x input, 5-minute cache
-# writes at 1.25x input. Update when prices change; keep unknown models out rather than guess.
+# model id -> (input $/MTok, output $/MTok), Anthropic first-party list prices (source: the
+# Claude API model table, cached 2026-11-03). Cache reads bill at 0.1x input unless the model
+# has its own rate below; 5-minute cache writes at 1.25x input. Update when prices change; keep
+# unknown models out rather than guess. claude-sonnet-4-5 is retired on 2026-11-30 and stays
+# only so old audit trails still price.
 PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
     "claude-opus-5-5": (4.00, 20.00),
     "claude-opus-5": (5.00, 25.00),
@@ -23,8 +26,13 @@ PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
     "claude-sonnet-5": (2.00, 10.00),
     "claude-sonnet-4-6": (3.00, 15.00),
     "claude-sonnet-4-5": (3.00, 15.00),
-    "claude-haiku-5-5": (0.10, 0.50),
+    "claude-haiku-5-5": (0.10, 0.50),  # prompts <= 100K tokens; $0.50/$2.50 beyond
     "claude-haiku-4-5": (1.00, 5.00),
+}
+# Models whose cache-read price is not 0.1x input ($/MTok).
+CACHE_READ_USD_PER_MTOK: dict[str, float] = {
+    "claude-opus-5-5": 0.20,
+    "claude-sonnet-5-5": 0.10,
 }
 CACHE_READ_MULT = 0.10
 CACHE_WRITE_MULT = 1.25
@@ -51,7 +59,7 @@ def estimate_cost(u: Usage) -> float | None:
     cost = (
         u.input_tokens * pin
         + u.output_tokens * pout
-        + u.cache_read_tokens * pin * CACHE_READ_MULT
+        + u.cache_read_tokens * CACHE_READ_USD_PER_MTOK.get(u.model, pin * CACHE_READ_MULT)
         + u.cache_write_tokens * pin * CACHE_WRITE_MULT
     ) / 1_000_000
     return round(cost, 6)

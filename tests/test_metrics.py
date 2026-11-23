@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import time
 import uuid
-from types import SimpleNamespace
 
 import pytest
 from langgraph.types import Command
 
 from triage_graph.graph import build_graph
-from triage_graph.llm import AnthropicLLM, RuleBasedLLM
+from triage_graph.llm import RuleBasedLLM
 from triage_graph.metrics import Usage, estimate_cost, format_report, summarize
-from triage_graph.state import Classification
 
 REFUND = "Fui cobrado em dobro, R$ 320,00, quero reembolso"
 
@@ -74,33 +72,20 @@ def test_approval_latency_excludes_human_wait_time():
 
 def test_cache_tokens_are_priced():
     u = Usage("claude-opus-5-5", input_tokens=0, cache_read_tokens=1_000_000)
-    assert estimate_cost(u) == pytest.approx(0.40)  # 0.1 x $4
+    assert estimate_cost(u) == pytest.approx(0.20)  # Opus 5.5 cache reads: $0.20/MTok
 
 
-def test_anthropic_adapter_reads_usage_from_response_without_network():
-    resp = SimpleNamespace(
-        content=[
-            SimpleNamespace(
-                type="tool_use",
-                input={"category": "billing", "priority": "medium", "rationale": "duplicada"},
-            )
-        ],
-        usage=SimpleNamespace(
-            input_tokens=500,
-            output_tokens=100,
-            cache_read_input_tokens=None,
-            cache_creation_input_tokens=0,
-        ),
+def test_cache_reads_default_to_a_tenth_of_input():
+    u = Usage("claude-haiku-4-5", input_tokens=0, cache_read_tokens=1_000_000)
+    assert estimate_cost(u) == pytest.approx(0.10)  # 0.1 x $1
+
+
+def test_sonnet_5_5_prices():
+    u = Usage(
+        "claude-sonnet-5-5",
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        cache_read_tokens=1_000_000,
+        cache_write_tokens=1_000_000,
     )
-    calls = []
-    fake_client = SimpleNamespace(
-        messages=SimpleNamespace(create=lambda **kw: calls.append(kw) or resp)
-    )
-    llm = object.__new__(AnthropicLLM)  # skip __init__: no SDK import, no API key, no network
-    llm._client, llm.model = fake_client, "claude-sonnet-4-5"
-
-    c, usage = llm.complete_with_usage(Classification, "Ticket: cobrado em dobro")
-    assert c.category == "billing"
-    assert (usage.input_tokens, usage.output_tokens) == (500, 100)
-    assert usage.cost_usd == pytest.approx((500 * 3 + 100 * 15) / 1e6)
-    assert calls[0]["tool_choice"]["name"] == "emit_classification"
+    assert estimate_cost(u) == pytest.approx(2.00 + 10.00 + 0.10 + 2.50)

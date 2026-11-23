@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-anthropic = ["anthropic>=0.40"]
+anthropic = ["anthropic>=2.12"]
 sqlite = ["langgraph-checkpoint-sqlite>=2.0"]
 postgres = ["langgraph-checkpoint-postgres>=2.0", "psycopg[binary]>=3.1"]
 api = ["fastapi>=0.110", "uvicorn>=0.29"]
@@ -31,6 +31,7 @@ dev = [
   "langgraph-checkpoint-sqlite>=2.0",
   "fastapi>=0.110",
   "httpx>=0.27",
+  "anthropic>=2.12",  # offline adapter tests use its schema helper; no API calls
 ]
 
 [project.scripts]

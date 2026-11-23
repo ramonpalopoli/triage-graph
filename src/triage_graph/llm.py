@@ -2,8 +2,8 @@
 
 `RuleBasedLLM` is a deterministic stand-in used by tests, evals and the CLI `--offline` mode:
 it makes the whole workflow (routing, retrieval, risk checks, HITL, audit) runnable and
-testable with zero network. `AnthropicLLM` uses Claude with tool use to get a JSON object that
-matches the Pydantic schema exactly.
+testable with zero network. `AnthropicLLM` uses Claude with structured outputs
+(`output_config.format`) to get a JSON object for the Pydantic schema, validated by Pydantic.
 """
 
 from __future__ import annotations
@@ -106,36 +106,80 @@ class RuleBasedLLM:
         )
 
 
-class AnthropicLLM:
-    """Claude via tool use: the schema becomes the tool's input_schema, so the output is JSON
-    that already matches the Pydantic model. Requires `pip install -e ".[anthropic]"`."""
+DEFAULT_MODEL = "claude-sonnet-5-5"
+# Server-side refusal fallback (beta): if the model declines for policy reasons, the API
+# re-runs the same request on the model's default fallback inside the same call.
+FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
-    def __init__(self, model: str = "claude-sonnet-4-5", api_key: str | None = None) -> None:
+
+class AnthropicLLM:
+    """Claude with structured outputs: the Pydantic schema becomes `output_config.format`, so the
+    reply is constrained to JSON for that schema, and Pydantic still validates it (constraints
+    the API cannot enforce, such as string lengths and numeric bounds, are checked here).
+    Requires `pip install -e ".[anthropic]"`.
+
+    Current models (Claude Sonnet 5.5 included) reject forced `tool_choice`, so the old
+    "single forced tool" trick is gone. Thinking is adaptive (on by default and not
+    disable-able on Sonnet 5.5); `effort` keeps it short for these small typed decisions and
+    `max_tokens` leaves room for thinking plus the JSON.
+    """
+
+    def __init__(
+        self,
+        model: str = DEFAULT_MODEL,
+        api_key: str | None = None,
+        *,
+        effort: str | None = "low",
+        max_tokens: int = 4096,
+        refusal_fallback: bool = True,
+        client: object | None = None,
+    ) -> None:
         import anthropic  # optional dependency
 
-        self._client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
+        self._transform_schema = anthropic.transform_schema
+        if client is None:
+            client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
+        self._client = client
         self.model = model
+        self.effort = effort
+        self.max_tokens = max_tokens
+        self.refusal_fallback = refusal_fallback
 
     def complete(self, schema: type[T], prompt: str) -> T:
         return self.complete_with_usage(schema, prompt)[0]
 
     def complete_with_usage(self, schema: type[T], prompt: str) -> tuple[T, Usage]:
-        tool = {
-            "name": f"emit_{schema.__name__.lower()}",
-            "description": f"Return a {schema.__name__} object.",
-            "input_schema": schema.model_json_schema(),
+        output_config: dict = {
+            "format": {"type": "json_schema", "schema": self._transform_schema(schema)}
         }
-        resp = self._client.messages.create(
-            model=self.model,
-            max_tokens=800,
-            tools=[tool],
-            tool_choice={"type": "tool", "name": tool["name"]},
-            messages=[{"role": "user", "content": prompt}],
-        )
+        if self.effort:
+            output_config["effort"] = self.effort
+        kwargs: dict = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "output_config": output_config,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if self.refusal_fallback:
+            kwargs.update(betas=[FALLBACK_BETA], fallbacks="default")
+            resp = self._client.beta.messages.create(**kwargs)
+        else:
+            resp = self._client.messages.create(**kwargs)
         usage = self._usage(resp)
-        block = next(b for b in resp.content if b.type == "tool_use")
+
+        stop = getattr(resp, "stop_reason", None)
+        if stop == "refusal":
+            details = getattr(resp, "stop_details", None)
+            category = getattr(details, "category", None)
+            raise ValueError(f"model declined the request (refusal, category={category})")
+        if stop == "max_tokens":
+            raise ValueError("model output was cut off by max_tokens; raise max_tokens")
+
+        text = _final_text(resp.content)
+        if not text:
+            raise ValueError("model returned no JSON text block")
         try:
-            return schema.model_validate(block.input), usage
+            return schema.model_validate_json(text), usage
         except ValidationError as exc:
             raise ValueError(f"model output failed validation: {json.dumps(exc.errors())}") from exc
 
@@ -145,8 +189,10 @@ class AnthropicLLM:
         def n(field: str) -> int:
             return int(getattr(u, field, 0) or 0)
 
+        # After a server-side fallback the response names the model that actually served it.
+        served_by = getattr(resp, "model", None)
         usage = Usage(
-            model=self.model,
+            model=served_by if isinstance(served_by, str) and served_by else self.model,
             input_tokens=n("input_tokens"),
             output_tokens=n("output_tokens"),
             cache_read_tokens=n("cache_read_input_tokens"),
@@ -154,3 +200,18 @@ class AnthropicLLM:
         )
         usage.cost_usd = estimate_cost(usage)
         return usage
+
+
+def _final_text(content: list) -> str:
+    """Text of the answer, read by block type: thinking blocks (possibly empty) may come first,
+    and after a server-side fallback only the blocks after the last `fallback` marker belong to
+    the model that produced the final answer."""
+    blocks = list(content)
+    last_fallback = max(
+        (i for i, b in enumerate(blocks) if getattr(b, "type", "") == "fallback"), default=-1
+    )
+    return "".join(
+        getattr(b, "text", "")
+        for b in blocks[last_fallback + 1 :]
+        if getattr(b, "type", "") == "text"
+    ).strip()

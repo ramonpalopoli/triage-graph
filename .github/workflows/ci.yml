@@ -47,3 +47,24 @@ jobs:
           cache: pip
       - run: pip install -e ".[dev,postgres]"
       - run: pytest -q tests/test_checkpoint.py -k postgres -rs
+
+  docker:
+    # Builds the API image and smoke-tests it: non-root user, health, auth, one triage.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t triage-graph:ci .
+      - name: Smoke test
+        run: |
+          TOKEN=$(openssl rand -hex 24)
+          docker run -d --name tg -p 8000:8000 -e TRIAGE_API_TOKEN=$TOKEN triage-graph:ci
+          for i in $(seq 1 30); do curl -fs localhost:8000/healthz && break; sleep 1; done
+          test "$(docker exec tg id -u)" = "10001"
+          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8000/approvals)" = "401"
+          curl -fs -X POST localhost:8000/triage -H "Authorization: Bearer $TOKEN" \
+            -H 'content-type: application/json' \
+            -d '{"ticket_id":"ci-1","text":"Cobrado em dobro R$ 120,00, reembolso"}' \
+            | grep -q pending_approval
+          curl -fs localhost:8000/approvals -H "Authorization: Bearer $TOKEN" | grep -q ci-1
+      - if: always()
+        run: docker logs tg || true

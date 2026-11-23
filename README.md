@@ -165,7 +165,7 @@ Run metrics
 ## Tests and evals
 
 ```bash
-make test    # 32 tests (+1 Postgres test, skipped without TRIAGE_TEST_POSTGRES_URL)
+make test    # 43 tests (+1 Postgres test, skipped without TRIAGE_TEST_POSTGRES_URL)
 make evals   # 20-scenario routing golden set, offline, gates CI
 make evals ARGS=--anthropic        # same golden set through Claude (manual, needs a key)
 make evals ARGS=--compare          # A/B: RuleBasedLLM vs AnthropicLLM (manual, needs a key)

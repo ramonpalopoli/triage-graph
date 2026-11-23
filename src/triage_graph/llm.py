@@ -14,6 +14,7 @@ from typing import Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from triage_graph.metrics import Usage, estimate_cost
 from triage_graph.state import Classification, Plan
 
 T = TypeVar("T", bound=BaseModel)
@@ -21,6 +22,15 @@ T = TypeVar("T", bound=BaseModel)
 
 class StructuredLLM(Protocol):
     def complete(self, schema: type[T], prompt: str) -> T: ...
+
+
+def complete_with_usage(llm: StructuredLLM, schema: type[T], prompt: str) -> tuple[T, Usage]:
+    """Call the adapter and return (result, usage). Adapters that do not report usage
+    (e.g. third-party stand-ins) count as zero tokens / zero cost."""
+    fn = getattr(llm, "complete_with_usage", None)
+    if callable(fn):
+        return fn(schema, prompt)
+    return llm.complete(schema, prompt), Usage(model=type(llm).__name__)
 
 
 class RuleBasedLLM:
@@ -34,6 +44,9 @@ class RuleBasedLLM:
         body = low[start + len("ticket:") :] if start >= 0 else low
         end = body.find("\n\npolicies:")
         return body[:end] if end >= 0 else body
+
+    def complete_with_usage(self, schema: type[T], prompt: str) -> tuple[T, Usage]:
+        return self.complete(schema, prompt), Usage(model="rule-based")  # no tokens, no cost
 
     def complete(self, schema: type[T], prompt: str) -> T:
         text = self._ticket_text(prompt)
@@ -104,6 +117,9 @@ class AnthropicLLM:
         self.model = model
 
     def complete(self, schema: type[T], prompt: str) -> T:
+        return self.complete_with_usage(schema, prompt)[0]
+
+    def complete_with_usage(self, schema: type[T], prompt: str) -> tuple[T, Usage]:
         tool = {
             "name": f"emit_{schema.__name__.lower()}",
             "description": f"Return a {schema.__name__} object.",
@@ -116,8 +132,25 @@ class AnthropicLLM:
             tool_choice={"type": "tool", "name": tool["name"]},
             messages=[{"role": "user", "content": prompt}],
         )
+        usage = self._usage(resp)
         block = next(b for b in resp.content if b.type == "tool_use")
         try:
-            return schema.model_validate(block.input)
+            return schema.model_validate(block.input), usage
         except ValidationError as exc:
             raise ValueError(f"model output failed validation: {json.dumps(exc.errors())}") from exc
+
+    def _usage(self, resp: object) -> Usage:
+        u = getattr(resp, "usage", None)
+
+        def n(field: str) -> int:
+            return int(getattr(u, field, 0) or 0)
+
+        usage = Usage(
+            model=self.model,
+            input_tokens=n("input_tokens"),
+            output_tokens=n("output_tokens"),
+            cache_read_tokens=n("cache_read_input_tokens"),
+            cache_write_tokens=n("cache_creation_input_tokens"),
+        )
+        usage.cost_usd = estimate_cost(usage)
+        return usage

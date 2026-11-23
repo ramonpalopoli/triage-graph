@@ -41,6 +41,7 @@ from pydantic import BaseModel, Field, StrictBool
 
 from triage_graph.checkpoint import open_checkpointer
 from triage_graph.graph import build_graph
+from triage_graph.metrics import summarize
 
 MIN_TOKEN_LEN = 24
 THREAD_ID_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
@@ -92,6 +93,7 @@ class RunView(BaseModel):
     outcome: str | None = None
     risk_flags: list[str] = []
     audit: list[dict] = []
+    metrics: dict | None = None  # per-node latency, tokens, estimated cost
 
 
 # --------------------------------------------------------------------------- helpers
@@ -122,6 +124,7 @@ def _view(graph, thread_id: str) -> RunView:
         outcome=values.get("outcome"),
         risk_flags=values.get("risk_flags", []),
         audit=values.get("audit", []),
+        metrics=summarize(values.get("audit", [])),
     )
 
 

@@ -67,6 +67,8 @@ def test_refund_flow_start_list_approve(client, audit):
     )
     assert r.status_code == 200
     assert r.json()["outcome"] == "refund executed"
+    assert r.json()["metrics"]["cost_usd"] == 0.0  # offline model: zero tokens, zero cost
+    assert "approve" in r.json()["metrics"]["nodes"]
     assert client.get("/approvals", headers=AUTH).json() == []
 
     decision = [e for e in audit.records if e["event"] == "decision"][0]

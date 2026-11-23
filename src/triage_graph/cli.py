@@ -21,6 +21,7 @@ from langgraph.types import Command
 from triage_graph.checkpoint import open_checkpointer
 from triage_graph.graph import build_graph
 from triage_graph.llm import RuleBasedLLM
+from triage_graph.metrics import format_report, summarize
 
 
 def _print_result(state: dict) -> None:
@@ -28,6 +29,7 @@ def _print_result(state: dict) -> None:
     print("Audit trail:")
     for ev in state["audit"]:
         print("  -", json.dumps({k: v for k, v in ev.items() if k != "ts"}, ensure_ascii=False))
+    print("\n" + format_report(summarize(state["audit"])))
 
 
 def main() -> int:
